@@ -1,5 +1,6 @@
 import os
 import re
+import sqlite3
 import logging
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
@@ -12,12 +13,8 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from telegram.error import TelegramError
+from telegram import Update
 import uuid
-import asyncio
-import aiosqlite
-from functools import lru_cache
-from typing import Optional, Tuple, List
 
 # تنظیم لاگر اصلی
 logging.basicConfig(
@@ -28,23 +25,18 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+# Bot configuration
+BOT_TOKEN = "7996022698:AAG65GXEjbDbgMGFVT9ExeGFmkvj0UDqbXE"
+CHANNEL_ID = "@chemical_eng_uma"
+OPERATOR_GROUP_ID = -1002574996302
+ADMIN_IDS = [5701423397, 158893761]
+CARD_NUMBER = "6219-8619-2120-2437"
+DB_PATH = "chemeng_bot.db"
 
-# Bot configuration from environment variables
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7996022698:AAG65GXEjbDbgMGFVT9ExeGFmkvj0UDqbXE")
-CHANNEL_ID = os.getenv("CHANNEL_ID", "@chemical_eng_uma")
-OPERATOR_GROUP_ID = int(os.getenv("OPERATOR_GROUP_ID", -1002574996302))
-ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "5701423397,158893761").split(",")]
-CARD_NUMBER = os.getenv("CARD_NUMBER", "6219-8619-2120-2437")
-DB_PATH = os.getenv("DB_PATH", "chemeng_bot.db")
-
-# Global async DB connection
-db: Optional[aiosqlite.Connection] = None
-
-async def init_db():
-    global db
-    db = await aiosqlite.connect(DB_PATH)
-    async with db.cursor() as c:
-        await c.execute("""
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 full_name TEXT,
@@ -54,7 +46,7 @@ async def init_db():
                 created_at TEXT
             )
         """)
-        await c.execute("""
+        c.execute("""
             CREATE TABLE IF NOT EXISTS events (
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT,
@@ -71,7 +63,7 @@ async def init_db():
                 deactivation_reason TEXT
             )
         """)
-        await c.execute("""
+        c.execute("""
             CREATE TABLE IF NOT EXISTS registrations (
                 registration_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
@@ -81,7 +73,7 @@ async def init_db():
                 FOREIGN KEY(event_id) REFERENCES events(event_id)
             )
         """)
-        await c.execute("""
+        c.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
@@ -92,13 +84,13 @@ async def init_db():
                 FOREIGN KEY(event_id) REFERENCES events(event_id)
             )
         """)
-        await c.execute("""
+        c.execute("""
             CREATE TABLE IF NOT EXISTS admins (
                 user_id INTEGER PRIMARY KEY,
                 added_at TEXT
             )
         """)
-        await c.execute("""
+        c.execute("""
             CREATE TABLE IF NOT EXISTS operator_messages (
                 message_id INTEGER PRIMARY KEY,
                 chat_id INTEGER,
@@ -108,14 +100,7 @@ async def init_db():
                 sent_at TEXT
             )
         """)
-        # Add indexes for performance
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_user_id ON users(user_id)")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_student_id ON users(student_id)")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_event_id ON events(event_id)")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_reg_user_event ON registrations(user_id, event_id)")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_payment_user_event ON payments(user_id, event_id)")
-        await c.execute("CREATE INDEX IF NOT EXISTS idx_admin_user_id ON admins(user_id)")
-        await db.commit()
+        conn.commit()
 
 # States for conversation handlers
 FULL_NAME, CONFIRM_FULL_NAME, NATIONAL_ID, CONFIRM_NATIONAL_ID, STUDENT_ID, CONFIRM_STUDENT_ID, PHONE, CONFIRM_PHONE = range(8)
@@ -136,21 +121,23 @@ def validate_national_id(national_id: str) -> bool:
     total = sum(int(national_id[i]) * (10 - i) for i in range(9)) % 11
     return total < 2 and check == total or total >= 2 and check == 11 - total
 
-@lru_cache(maxsize=500)
-async def get_user_info(user_id: int) -> Optional[Tuple]:
-    async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cursor:
-        return await cursor.fetchone()
+def get_user_info(user_id: int) -> tuple:
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        return c.fetchone()
 
-@lru_cache(maxsize=100)
-async def get_admin_info(user_id: int) -> Optional[Tuple]:
-    async with db.execute("SELECT * FROM admins WHERE user_id = ?", (user_id,)) as cursor:
-        return await cursor.fetchone()
+def get_admin_info(user_id: int) -> tuple:
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM admins WHERE user_id = ?", (user_id,))
+        return c.fetchone()
 
 async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     try:
         member = await context.bot.get_chat_member(CHANNEL_ID, update.effective_user.id)
         return member.status in ["member", "administrator", "creator"]
-    except TelegramError:
+    except Forbidden:
         return False
 
 def get_main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -183,12 +170,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             ]])
         )
         return ConversationHandler.END
-    user_info = await get_user_info(user_id)
+    user_info = get_user_info(user_id)
     if not user_info:
         await update.message.reply_text("لطفاً نام کامل خود را به فارسی وارد کنید (مثال: علی محمدی):")
         return FULL_NAME
     full_name = user_info[1]
-    is_admin = user_id in ADMIN_IDS or bool(await get_admin_info(user_id))
+    is_admin = user_id in ADMIN_IDS or bool(get_admin_info(user_id))
     await update.message.reply_text(
         f"{full_name} عزیز، به ربات انجمن مهندسی شیمی خوش آمدید! 🎉",
         reply_markup=get_main_menu(is_admin)
@@ -200,13 +187,13 @@ async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await query.answer()
     if await check_channel_membership(update, context):
         user_id = update.effective_user.id
-        user_info = await get_user_info(user_id)
+        user_info = get_user_info(user_id)
         if not user_info:
             await query.message.reply_text("لطفاً نام کامل خود را به فارسی وارد کنید (مثال: علی محمدی):")
             await query.message.delete()
             return FULL_NAME
         full_name = user_info[1]
-        is_admin = user_id in ADMIN_IDS or bool(await get_admin_info(user_id))
+        is_admin = user_id in ADMIN_IDS or bool(get_admin_info(user_id))
         await query.message.reply_text(
             f"{full_name} عزیز، به ربات انجمن مهندسی شیمی خوش آمدید! 🎉",
             reply_markup=get_main_menu(is_admin)
@@ -338,8 +325,9 @@ async def confirm_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await query.message.delete()
         return PHONE
     user_id = update.effective_user.id
-    async with db.cursor() as c:
-        await c.execute(
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute(
             "INSERT INTO users (user_id, full_name, national_id, student_id, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 user_id,
@@ -350,10 +338,8 @@ async def confirm_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
                 datetime.now().isoformat(),
             )
         )
-        await db.commit()
-    # Clear cache after insert
-    get_user_info.cache_clear()
-    is_admin = user_id in ADMIN_IDS or bool(await get_admin_info(user_id))
+        conn.commit()
+    is_admin = user_id in ADMIN_IDS or bool(get_admin_info(user_id))
     await query.message.reply_text(
         "پروفایل شما با موفقیت ایجاد شد! ✅",
         reply_markup=get_main_menu(is_admin)
@@ -364,12 +350,12 @@ async def confirm_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def reset_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     context.user_data.clear()  # پاک کردن تمام داده‌های موقت
-    user_info = await get_user_info(user_id)
+    user_info = get_user_info(user_id)
     if not user_info:
         await update.message.reply_text("لطفاً نام کامل خود را به فارسی وارد کنید (مثال: علی محمدی):")
         return FULL_NAME
     full_name = user_info[1]
-    is_admin = user_id in ADMIN_IDS or bool(await get_admin_info(user_id))
+    is_admin = user_id in ADMIN_IDS or bool(get_admin_info(user_id))
     await update.message.reply_text(
         f"{full_name} عزیز، به ربات انجمن مهندسی شیمی خوش آمدید! 🎉",
         reply_markup=get_main_menu(is_admin)
@@ -385,7 +371,7 @@ async def edit_profile_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ]])
         )
         return ConversationHandler.END
-    user_info = await get_user_info(user_id)
+    user_info = get_user_info(user_id)
     if not user_info:
         await update.message.reply_text("ابتدا پروفایل خود را تکمیل کنید!", reply_markup=get_main_menu())
         return ConversationHandler.END
@@ -411,7 +397,7 @@ async def edit_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     await query.answer()
     user_id = update.effective_user.id
     if query.data == "cancel_edit":
-        is_admin = user_id in ADMIN_IDS or bool(await get_admin_info(user_id))
+        is_admin = user_id in ADMIN_IDS or bool(get_admin_info(user_id))
         await query.message.reply_text("ویرایش لغو شد.", reply_markup=get_main_menu(is_admin))
         await query.message.delete()
         return ConversationHandler.END
@@ -438,25 +424,26 @@ async def edit_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def edit_profile_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     field = context.user_data["edit_field"]
-    async with db.cursor() as c:
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
         if field == "edit_full_name":
             text = update.message.text
             if not re.match(r"^[آ-ی\s]{6,}$", text) or text.count(" ") < 1:
                 await update.message.reply_text("نام کامل باید حداقل 6 کاراکتر با حروف فارسی و شامل یک فاصله باشد. دوباره وارد کنید:")
                 return EDIT_PROFILE_VALUE
-            await c.execute("UPDATE users SET full_name = ? WHERE user_id = ?", (text, user_id))
+            c.execute("UPDATE users SET full_name = ? WHERE user_id = ?", (text, user_id))
         elif field == "edit_national_id":
             text = update.message.text
             if not validate_national_id(text):
                 await update.message.reply_text("کد ملی نامعتبر است. لطفاً کد ملی 10 رقمی معتبر وارد کنید:")
                 return EDIT_PROFILE_VALUE
-            await c.execute("UPDATE users SET national_id = ? WHERE user_id = ?", (text, user_id))
+            c.execute("UPDATE users SET national_id = ? WHERE user_id = ?", (text, user_id))
         elif field == "edit_student_id":
             text = update.message.text
             if not re.match(r"^\d+$", text):
                 await update.message.reply_text("شماره دانشجویی باید فقط شامل اعداد باشد. دوباره وارد کنید:")
                 return EDIT_PROFILE_VALUE
-            await c.execute("UPDATE users SET student_id = ? WHERE user_id = ?", (text, user_id))
+            c.execute("UPDATE users SET student_id = ? WHERE user_id = ?", (text, user_id))
         elif field == "edit_phone":
             if update.message.contact:
                 phone = update.message.contact.phone_number
@@ -466,27 +453,21 @@ async def edit_profile_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if not re.match(r"^09\d{9}$", phone):
                 await update.message.reply_text("شماره تماس باید 11 رقم و با 09 شروع شود. دوباره وارد کنید:")
                 return EDIT_PROFILE_VALUE
-            await c.execute("UPDATE users SET phone = ? WHERE user_id = ?", (phone, user_id))
-        await db.commit()
-    # Clear cache after update
-    get_user_info.cache_clear()
-    is_admin = user_id in ADMIN_IDS or bool(await get_admin_info(user_id))
+            c.execute("UPDATE users SET phone = ? WHERE user_id = ?", (phone, user_id))
+        conn.commit()
+    is_admin = user_id in ADMIN_IDS or bool(get_admin_info(user_id))
     await update.message.reply_text("پروفایل شما با موفقیت ویرایش شد! ✅", reply_markup=get_main_menu(is_admin))
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_info = await get_user_info(update.effective_user.id)
+    user_info = get_user_info(update.effective_user.id)
     full_name = user_info[1] if user_info else "کاربر"
-    is_admin = update.effective_user.id in ADMIN_IDS or bool(await get_admin_info(update.effective_user.id))
+    is_admin = update.effective_user.id in ADMIN_IDS or bool(get_admin_info(update.effective_user.id))
     await update.message.reply_text(
         f"{full_name} عزیز، عملیات لغو شد.",
         reply_markup=get_main_menu(is_admin)
     )
     return ConversationHandler.END
-
-async def get_active_events() -> List[Tuple]:
-    async with db.execute("SELECT event_id, title, type FROM events WHERE is_active = 1") as cursor:
-        return await cursor.fetchall()
 
 async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await check_channel_membership(update, context):
@@ -497,7 +478,10 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ]])
         )
         return
-    events = await get_active_events()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT event_id, title, type FROM events WHERE is_active = 1")
+        events = c.fetchall()
     if not events:
         await update.message.reply_text("در حال حاضر دوره یا بازدید فعالی وجود ندارد. 📪")
         return
@@ -507,15 +491,14 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-async def get_event_by_id(event_id: int) -> Optional[Tuple]:
-    async with db.execute("SELECT * FROM events WHERE event_id = ?", (event_id,)) as cursor:
-        return await cursor.fetchone()
-
 async def event_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     event_id = int(query.data.split("_")[1])
-    event = await get_event_by_id(event_id)
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
     if not event:
         await query.message.reply_text("رویداد یافت نشد!")
         return
@@ -540,10 +523,6 @@ async def event_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
     await query.message.delete()
 
-async def check_registration(user_id: int, event_id: int) -> bool:
-    async with db.execute("SELECT * FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id)) as cursor:
-        return bool(await cursor.fetchone())
-
 async def register_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -557,63 +536,62 @@ async def register_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     event_id = int(query.data.split("_")[1])
     user_id = update.effective_user.id
-    event = await get_event_by_id(event_id)
-    if not event:
-        await query.message.reply_text("رویداد یافت نشد!")
-        return
-    if await check_registration(user_id, event_id):
-        await query.message.reply_text("شما قبلاً ثبت‌نام کرده‌اید! 📋")
-        return
-    if not event[8]:
-        await query.message.reply_text(f"رویداد غیرفعال شده است. دلیل: {event[12]}")
-        return
-    if event[2] != "دوره" and event[6] >= event[5]:
-        await query.message.reply_text("ظرفیت تکمیل شده است. 📪 برای ثبت نام در لیست ذخیره، لطفاً با پشتیبانی تماس بگیرید.")
-        return
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
+        c.execute("SELECT * FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+        if c.fetchone():
+            await query.message.reply_text("شما قبلاً ثبت‌نام کرده‌اید! 📋")
+            return
+        if not event[8]:
+            await query.message.reply_text(f"رویداد غیرفعال شده است. دلیل: {event[12]}")
+            return
+        if event[2] != "دوره" and event[6] >= event[5]:
+            await query.message.reply_text("ظرفیت تکمیل شده است. 📪 برای ثبت نام در لیست ذخیره، لطفاً با پشتیبانی تماس بگیرید.")
+            return
     if event[10] == 0:  # Free event
-        await register_free_event(user_id, event_id, context, event)
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
+                (user_id, event_id, datetime.now().isoformat())
+            )
+            c.execute(
+                "UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?",
+                (event_id,)
+            )
+            c.execute("SELECT full_name, national_id, student_id, phone FROM users WHERE user_id = ?", (user_id,))
+            user = c.fetchone()
+            # محاسبه شماره ردیف
+            c.execute("SELECT COUNT(*) FROM registrations WHERE event_id = ?", (event_id,))
+            reg_count = c.fetchone()[0]
+            conn.commit()
+        hashtag = f"#{event[2]} #{event[9].replace(' ', '_')}"
+        text = (
+            f"{hashtag}\n"
+            f"{reg_count}:\n"
+            f"نام: {user[0]}\n"
+            f"کد ملی: {user[1]}\n"
+            f"شماره دانشجویی: {user[2]}\n"
+            f"شماره تماس: {user[3]}"
+        )
+        message = await context.bot.send_message(OPERATOR_GROUP_ID, text)
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (message.message_id, OPERATOR_GROUP_ID, user_id, event_id, "registration", datetime.now().isoformat())
+            )
+            conn.commit()
+        await query.message.reply_text("ثبت‌نام شما با موفقیت انجام شد! ✅ اپراتورها اطلاعات شما را دریافت کردند.")
+        if event[2] != "دوره" and event[6] + 1 >= event[5]:
+            await deactivate_event(event_id, "تکمیل ظرفیت", context)
     else:  # Paid event
         context.user_data["pending_event_id"] = event_id
         await query.message.reply_text(
             f"برای تکمیل ثبت‌نام در {event[1]}، لطفاً مبلغ {event[10]:,} تومان را به شماره کارت زیر واریز کنید:\n{CARD_NUMBER}\nلطفاً تصویر رسید پرداخت را ارسال کنید."
         )
-
-async def register_free_event(user_id: int, event_id: int, context: ContextTypes.DEFAULT_TYPE, event: Tuple) -> None:
-    async with db.cursor() as c:
-        await c.execute(
-            "INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
-            (user_id, event_id, datetime.now().isoformat())
-        )
-        await c.execute(
-            "UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?",
-            (event_id,)
-        )
-        async with db.execute("SELECT COUNT(*) FROM registrations WHERE event_id = ?", (event_id,)) as cursor:
-            reg_count = (await cursor.fetchone())[0]
-        await db.commit()
-    user_info = await get_user_info(user_id)
-    hashtag = f"#{event[2]} #{event[9].replace(' ', '_')}"
-    text = (
-        f"{hashtag}\n"
-        f"{reg_count}:\n"
-        f"نام: {user_info[1]}\n"
-        f"کد ملی: {user_info[2]}\n"
-        f"شماره دانشجویی: {user_info[3]}\n"
-        f"شماره تماس: {user_info[4]}"
-    )
-    try:
-        message = await context.bot.send_message(OPERATOR_GROUP_ID, text)
-        async with db.cursor() as c:
-            await c.execute(
-                "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (message.message_id, OPERATOR_GROUP_ID, user_id, event_id, "registration", datetime.now().isoformat())
-            )
-            await db.commit()
-    except TelegramError as e:
-        logger.error(f"Error sending to operator group: {str(e)}")
-    await query.message.reply_text("ثبت‌نام شما با موفقیت انجام شد! ✅ اپراتورها اطلاعات شما را دریافت کردند.")
-    if event[2] != "دوره" and event[6] + 1 >= event[5]:
-        await deactivate_event(event_id, "تکمیل ظرفیت", context)
 
 async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if "pending_event_id" not in context.user_data:
@@ -621,14 +599,18 @@ async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_T
         return
     event_id = context.user_data["pending_event_id"]
     user_id = update.effective_user.id
-    event = await get_event_by_id(event_id)
-    user_info = await get_user_info(user_id)
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
+        c.execute("SELECT full_name, national_id, student_id, phone FROM users WHERE user_id = ?", (user_id,))
+        user = c.fetchone()
     text = (
         f"#{event[2]} #{event[9].replace(' ', '_')}\n"
-        f"نام: {user_info[1]}\n"
-        f"کد ملی: {user_info[2]}\n"
-        f"شماره دانشجویی: {user_info[3]}\n"
-        f"شماره تماس: {user_info[4]}\n"
+        f"نام: {user[0]}\n"
+        f"کد ملی: {user[1]}\n"
+        f"شماره دانشجویی: {user[2]}\n"
+        f"شماره تماس: {user[3]}\n"
         f"مبلغ: {event[10]:,} تومان"
     )
     buttons = [
@@ -638,27 +620,26 @@ async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_T
             InlineKeyboardButton("ابطال 🚫", callback_data=f"cancel_payment_{user_id}_{event_id}")
         ]
     ]
-    try:
-        message = await context.bot.send_photo(
-            OPERATOR_GROUP_ID,
-            update.message.photo[-1].file_id,
-            caption=text,
-            reply_markup=InlineKeyboardMarkup(buttons)
+    message = await context.bot.send_photo(
+        OPERATOR_GROUP_ID,
+        update.message.photo[-1].file_id,
+        caption=text,
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (message.message_id, OPERATOR_GROUP_ID, user_id, event_id, "payment", datetime.now().isoformat())
         )
-        async with db.cursor() as c:
-            await c.execute(
-                "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (message.message_id, OPERATOR_GROUP_ID, user_id, event_id, "payment", datetime.now().isoformat())
-            )
-            await db.commit()
-    except TelegramError as e:
-        logger.error(f"Error sending payment receipt: {str(e)}")
+        conn.commit()
     await update.message.reply_text("رسید شما ارسال شد و در انتظار تأیید است. ✅")
 
+# تابع مدیریت اقدامات پرداخت
 async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    if update.effective_user.id not in ADMIN_IDS and not await get_admin_info(update.effective_user.id):
+    if update.effective_user.id not in ADMIN_IDS and not get_admin_info(update.effective_user.id):
         await query.answer("فقط ادمین‌ها می‌توانند این اقدام را انجام دهند! 🚫", show_alert=True)
         return
 
@@ -681,17 +662,56 @@ async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_id = int(callback_parts[3])
         event_id = int(callback_parts[4])
 
-        event = await get_event_by_id(event_id)
-        user_info = await get_user_info(user_id)
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
+            event = c.fetchone()
+            c.execute("SELECT full_name, national_id, student_id, phone FROM users WHERE user_id = ?", (user_id,))
+            user = c.fetchone()
 
-        if not event or not user_info:
+        if not event or not user:
             logger.error(f"Event or user not found: event_id={event_id}, user_id={user_id}")
             await query.message.reply_text("خطایی رخ داد. رویداد یا کاربر یافت نشد.")
             await query.message.delete()
             return
 
         if sub_action == "confirm_payment":
-            await confirm_payment(user_id, event_id, context, event, user_info)
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
+                    (user_id, event_id, datetime.now().isoformat())
+                )
+                c.execute(
+                    "INSERT INTO payments (user_id, event_id, amount, confirmed_at) VALUES (?, ?, ?, ?)",
+                    (user_id, event_id, event[10], datetime.now().isoformat())
+                )
+                c.execute(
+                    "UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?",
+                    (event_id,)
+                )
+                c.execute("SELECT COUNT(*) FROM registrations WHERE event_id = ?", (event_id,))
+                reg_count = c.fetchone()[0]
+                conn.commit()
+            hashtag = f"#{event[2]} #{event[9].replace(' ', '_')}"
+            text = (
+                f"{hashtag}, {reg_count}:\n"
+                f"نام: {user[0]}\n"
+                f"کد ملی: {user[1]}\n"
+                f"شماره دانشجویی: {user[2]}\n"
+                f"شماره تماس: {user[3]}"
+            )
+            message = await context.bot.send_message(OPERATOR_GROUP_ID, text)
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (message.message_id, OPERATOR_GROUP_ID, user_id, event_id, "registration", datetime.now().isoformat())
+                )
+                conn.commit()
+            await context.bot.send_message(user_id, "پرداخت شما تأیید شد و ثبت‌نام شما تکمیل شد! ✅")
+            if event[2] != "دوره" and event[6] + 1 >= event[5]:
+                await deactivate_event(event_id, "تکمیل ظرفیت", context)
         elif sub_action == "unclear_payment":
             context.user_data["pending_event_id"] = event_id
             await context.bot.send_message(
@@ -730,89 +750,50 @@ async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.message.reply_text("خطایی رخ داد. فرمت داده نادرست است.")
         await query.message.delete()
 
-async def confirm_payment(user_id: int, event_id: int, context: ContextTypes.DEFAULT_TYPE, event: Tuple, user_info: Tuple) -> None:
-    async with db.cursor() as c:
-        await c.execute(
-            "INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
-            (user_id, event_id, datetime.now().isoformat())
-        )
-        await c.execute(
-            "INSERT INTO payments (user_id, event_id, amount, confirmed_at) VALUES (?, ?, ?, ?)",
-            (user_id, event_id, event[10], datetime.now().isoformat())
-        )
-        await c.execute(
-            "UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?",
-            (event_id,)
-        )
-        async with db.execute("SELECT COUNT(*) FROM registrations WHERE event_id = ?", (event_id,)) as cursor:
-            reg_count = (await cursor.fetchone())[0]
-        await db.commit()
-    hashtag = f"#{event[2]} #{event[9].replace(' ', '_')}"
-    text = (
-        f"{hashtag}, {reg_count}:\n"
-        f"نام: {user_info[1]}\n"
-        f"کد ملی: {user_info[2]}\n"
-        f"شماره دانشجویی: {user_info[3]}\n"
-        f"شماره تماس: {user_info[4]}"
-    )
-    try:
-        message = await context.bot.send_message(OPERATOR_GROUP_ID, text)
-        async with db.cursor() as c:
-            await c.execute(
-                "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (message.message_id, OPERATOR_GROUP_ID, user_id, event_id, "registration", datetime.now().isoformat())
-            )
-            await db.commit()
-    except TelegramError as e:
-        logger.error(f"Error sending registration to operator: {str(e)}")
-    await context.bot.send_message(user_id, "پرداخت شما تأیید شد و ثبت‌نام شما تکمیل شد! ✅")
-    if event[2] != "دوره" and event[6] + 1 >= event[5]:
-        await deactivate_event(event_id, "تکمیل ظرفیت", context)
-
-async def get_registrations_for_event(event_id: int) -> List[Tuple]:
-    async with db.execute("SELECT user_id FROM registrations WHERE event_id = ?", (event_id,)) as cursor:
-        return await cursor.fetchall()
-
 async def deactivate_event(event_id: int, reason: str, context: ContextTypes.DEFAULT_TYPE) -> None:
-    async with db.cursor() as c:
-        await c.execute(
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute(
             "UPDATE events SET is_active = 0, deactivation_reason = ? WHERE event_id = ?",
             (reason, event_id)
         )
-        await db.commit()
-    event = await get_event_by_id(event_id)
-    registrations = await get_registrations_for_event(event_id)
+        c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
+        c.execute("SELECT user_id FROM registrations WHERE event_id = ?", (event_id,))
+        registrations = c.fetchall()
+        conn.commit()
     users = []
     for reg in registrations:
-        user = await get_user_info(reg[0])
-        users.append(f"- {user[1]} ({user[4]})")
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT full_name, phone FROM users WHERE user_id = ?", (reg[0],))
+            user = c.fetchone()
+            users.append(f"- {user[0]} ({user[1]})")
     text = (
         f"#{event[2]} #{event[9].replace(' ', '_')}\n"
         f"#نهایی\n"
         f"تعداد ثبت‌نام‌کنندگان: {len(users)}\n"
         f"{' '.join(users)}"
     )
-    try:
-        message = await context.bot.send_message(OPERATOR_GROUP_ID, text)
-        async with db.cursor() as c:
-            await c.execute(
-                "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (message.message_id, OPERATOR_GROUP_ID, 0, event_id, "final_list", datetime.now().isoformat())
-            )
-            await db.commit()
-    except TelegramError as e:
-        logger.error(f"Error sending final list: {str(e)}")
+    message = await context.bot.send_message(OPERATOR_GROUP_ID, text)
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (message.message_id, OPERATOR_GROUP_ID, 0, event_id, "final_list", datetime.now().isoformat())
+        )
+        conn.commit()
 
 async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS or not await get_admin_info(user_id):
+    if user_id not in ADMIN_IDS and not get_admin_info(user_id):
         await update.message.reply_text("شما دسترسی ادمین ندارید! 🚫")
         return
     await update.message.reply_text("منوی ادمین:", reply_markup=get_admin_menu())
 
 async def add_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS and not await get_admin_info(user_id):
+    if user_id not in ADMIN_IDS and not get_admin_info(user_id):
         await update.message.reply_text("شما دسترسی ادمین ندارید! 🚫")
         return ConversationHandler.END
     await update.message.reply_text(
@@ -925,10 +906,6 @@ async def confirm_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         )
     return CONFIRM_EVENT
 
-async def get_all_users() -> List[Tuple]:
-    async with db.execute("SELECT user_id, full_name FROM users") as cursor:
-        return await cursor.fetchall()
-
 async def save_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -938,8 +915,9 @@ async def save_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     event_data = context.user_data
     try:
-        async with db.cursor() as c:
-            await c.execute(
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
                 """
                 INSERT INTO events (title, type, date, location, capacity, description, is_active, hashtag, cost, card_number)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -958,36 +936,34 @@ async def save_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 )
             )
             event_id = c.lastrowid
-            await db.commit()
+            conn.commit()
         logger.info(f"Event {event_id} created successfully")
-        users = await get_all_users()
-        message = (
-            f"{user[1]} عزیز،\n"
-            f"یک #{event_data['event_type']} {event_data['event_hashtag']} اضافه شد.\n"
-            f"می‌تونی جزئیات رو در کانال انجمن مهندسی شیمی بخونی و همین الان ثبت‌نام کنی..."
-        )
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT user_id, full_name FROM users")
+            users = c.fetchall()
         for user in users:
-            try:
-                await context.bot.send_message(user[0], message)
-                await asyncio.sleep(0.033)  # Rate limit: ~30 messages per second
-                if "event_photo" in event_data:
-                    await context.bot.send_photo(
-                        user[0],
-                        event_data["event_photo"],
-                        caption=event_data["event_description"]
-                    )
-                else:
-                    await context.bot.send_message(user[0], f"توضیحات: {event_data['event_description']}")
-                await context.bot.send_message(
+            message = (
+                f"{user[1]} عزیز،\n"
+                f"یک #{event_data['event_type']} {event_data['event_hashtag']} اضافه شد.\n"
+                f"می‌تونی جزئیات رو در کانال انجمن مهندسی شیمی بخونی و همین الان ثبت‌نام کنی..."
+            )
+            await context.bot.send_message(user[0], message)
+            if "event_photo" in event_data:
+                await context.bot.send_photo(
                     user[0],
-                    "ثبت‌نام کن 👇",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("ثبت‌نام ✅", callback_data=f"register_{event_id}")]
-                    ])
+                    event_data["event_photo"],
+                    caption=event_data["event_description"]
                 )
-                await asyncio.sleep(0.033)
-            except TelegramError as e:
-                logger.error(f"Error sending announcement to user {user[0]}: {str(e)}")
+            else:
+                await context.bot.send_message(user[0], f"توضیحات: {event_data['event_description']}")
+            await context.bot.send_message(
+                user[0],
+                "ثبت‌نام کن 👇",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("ثبت‌نام ✅", callback_data=f"register_{event_id}")]
+                ])
+            )
         await query.message.reply_text("رویداد با موفقیت اضافه شد! ✅", reply_markup=get_admin_menu())
         await query.message.delete()
     except Exception as e:
@@ -996,16 +972,15 @@ async def save_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await query.message.delete()
     return ConversationHandler.END
 
-async def get_all_events() -> List[Tuple]:
-    async with db.execute("SELECT event_id, title, type FROM events") as cursor:
-        return await cursor.fetchall()
-
 async def edit_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS and not await get_admin_info(user_id):
+    if user_id not in ADMIN_IDS and not get_admin_info(user_id):
         await update.message.reply_text("شما دسترسی ادمین ندارید! 🚫")
         return ConversationHandler.END
-    events = await get_all_events()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT event_id, title, type FROM events")
+        events = c.fetchall()
     if not events:
         await update.message.reply_text("هیچ رویدادی وجود ندارد!", reply_markup=get_admin_menu())
         return ConversationHandler.END
@@ -1017,7 +992,10 @@ async def edit_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     event_id = int(query.data.split("_")[2])
-    event = await get_event_by_id(event_id)
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
     context.user_data["edit_event_id"] = event_id
     cost_text = "رایگان" if event[10] == 0 else f"{event[10]:,} تومان"
     capacity_text = "نامحدود" if event[2] == "دوره" else f"{event[5]}"
@@ -1103,8 +1081,9 @@ async def save_edited_event(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if capacity < 0:
             raise ValueError("ظرفیت نمی‌تواند منفی باشد.")
 
-        async with db.cursor() as c:
-            await c.execute(
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
                 """
                 UPDATE events SET title = ?, type = ?, date = ?, location = ?, capacity = ?,
                 description = ?, hashtag = ?, cost = ?, card_number = ?
@@ -1115,7 +1094,7 @@ async def save_edited_event(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     cost, CARD_NUMBER if cost > 0 else "", event_id
                 )
             )
-            await db.commit()
+            conn.commit()
         await update.message.reply_text("رویداد با موفقیت ویرایش شد! ✅", reply_markup=get_admin_menu())
         return ConversationHandler.END
     except ValueError as e:
@@ -1127,16 +1106,15 @@ async def save_edited_event(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("خطای غیرمنتظره رخ داد. لطفاً دوباره سعی کنید.")
         return EDIT_EVENT
 
-async def get_events_with_status() -> List[Tuple]:
-    async with db.execute("SELECT event_id, title, type, is_active FROM events") as cursor:
-        return await cursor.fetchall()
-
 async def toggle_event_status_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS and not await get_admin_info(user_id):
+    if user_id not in ADMIN_IDS and not get_admin_info(user_id):
         await update.message.reply_text("شما دسترسی ادمین ندارید! 🚫")
         return ConversationHandler.END
-    events = await get_events_with_status()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT event_id, title, type, is_active FROM events")
+        events = c.fetchall()
     if not events:
         await update.message.reply_text("هیچ رویدادی وجود ندارد!", reply_markup=get_admin_menu())
         return ConversationHandler.END
@@ -1157,20 +1135,23 @@ async def toggle_event_status(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.message.reply_text("خطا: رویداد انتخاب نشده است!", reply_markup=get_admin_menu())
             await query.message.delete()
             return ConversationHandler.END
-        async with db.cursor() as c:
-            await c.execute(
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
                 "UPDATE events SET is_active = 0, deactivation_reason = ? WHERE event_id = ?",
                 (reason, event_id)
             )
-            await db.commit()
+            conn.commit()
         await query.message.reply_text("رویداد با موفقیت غیرفعال شد! ✅", reply_markup=get_admin_menu())
         await query.message.delete()
         return ConversationHandler.END
     else:
         event_id = int(query.data.split("_")[2])
         context.user_data["toggle_event_id"] = event_id
-        async with db.execute("SELECT is_active FROM events WHERE event_id = ?", (event_id,)) as cursor:
-            is_active = (await cursor.fetchone())[0]
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT is_active FROM events WHERE event_id = ?", (event_id,))
+            is_active = c.fetchone()[0]
         if is_active:
             await query.message.reply_text(
                 "علت غیرفعال کردن چیست؟",
@@ -1181,12 +1162,13 @@ async def toggle_event_status(update: Update, context: ContextTypes.DEFAULT_TYPE
                 ])
             )
         else:
-            async with db.cursor() as c:
-                await c.execute(
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute(
                     "UPDATE events SET is_active = 1, deactivation_reason = '' WHERE event_id = ?",
                     (event_id,)
                 )
-                await db.commit()
+                conn.commit()
             await query.message.reply_text("رویداد با موفقیت فعال شد! ✅", reply_markup=get_admin_menu())
             await query.message.delete()
             return ConversationHandler.END
@@ -1195,10 +1177,13 @@ async def toggle_event_status(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def announce_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS and not await get_admin_info(user_id):
+    if user_id not in ADMIN_IDS and not get_admin_info(user_id):
         await update.message.reply_text("شما دسترسی ادمین ندارید! 🚫")
         return ConversationHandler.END
-    events = await get_all_events()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT event_id, title, type FROM events")
+        events = c.fetchall()
     buttons = [[InlineKeyboardButton(f"{event[1]} ({event[2]})", callback_data=f"announce_group_{event[0]}")] for event in events]
     buttons.append([InlineKeyboardButton("همه گروه‌ها", callback_data="announce_group_all")])
     await update.message.reply_text("گروه هدف اعلان را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
@@ -1217,24 +1202,22 @@ async def send_announcement(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     message = update.message.text
     group = context.user_data["announce_group"]
     if group == "all":
-        users = await get_all_users()
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT user_id FROM users")
+            users = c.fetchall()
         for user in users:
-            try:
-                await context.bot.send_message(user[0], f"#اطلاعیه\n{message}")
-                await asyncio.sleep(0.033)
-            except TelegramError as e:
-                logger.error(f"Error sending announcement to {user[0]}: {str(e)}")
+            await context.bot.send_message(user[0], f"#اطلاعیه\n{message}")
     else:
         event_id = int(group)
-        async with db.execute("SELECT hashtag, type FROM events WHERE event_id = ?", (event_id,)) as cursor:
-            event = await cursor.fetchone()
-        registrations = await get_registrations_for_event(event_id)
-        for reg in registrations:
-            try:
-                await context.bot.send_message(reg[0], f"#{event[1]} #{event[0].replace(' ', '_')}\n{message}")
-                await asyncio.sleep(0.033)
-            except TelegramError as e:
-                logger.error(f"Error sending announcement to {reg[0]}: {str(e)}")
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT hashtag, type FROM events WHERE event_id = ?", (event_id,))
+            event = c.fetchone()
+            c.execute("SELECT user_id FROM registrations WHERE event_id = ?", (event_id,))
+            users = c.fetchall()
+        for user in users:
+            await context.bot.send_message(user[0], f"#{event[1]} #{event[0].replace(' ', '_')}\n{message}")
     await update.message.reply_text("اعلان با موفقیت ارسال شد! ✅", reply_markup=get_admin_menu())
     return ConversationHandler.END
 
@@ -1260,8 +1243,10 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await query.message.delete()
         return ADD_ADMIN
     elif query.data == "remove_admin":
-        async with db.execute("SELECT user_id FROM admins") as cursor:
-            admins = await cursor.fetchall()
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT user_id FROM admins")
+            admins = c.fetchall()
         if not admins:
             await query.message.reply_text("هیچ ادمینی وجود ندارد!", reply_markup=get_admin_menu())
             await query.message.delete()
@@ -1272,26 +1257,25 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return REMOVE_ADMIN
 
 async def save_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id_str = update.message.text
-    if not re.match(r"^\d+$", user_id_str):
+    user_id = update.message.text
+    if not re.match(r"^\d+$", user_id):
         await update.message.reply_text("آیدی باید فقط شامل اعداد باشد. دوباره وارد کنید:")
         return ADD_ADMIN
-    user_id = int(user_id_str)
+    user_id = int(user_id)
     if user_id in ADMIN_IDS:
         await update.message.reply_text("این کاربر ادمین اصلی است و نمی‌توان آن را تغییر داد!", reply_markup=get_admin_menu())
         return ConversationHandler.END
-    async with db.execute("SELECT * FROM admins WHERE user_id = ?", (user_id,)) as cursor:
-        if await cursor.fetchone():
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM admins WHERE user_id = ?", (user_id,))
+        if c.fetchone():
             await update.message.reply_text("این کاربر قبلاً ادمین است!", reply_markup=get_admin_menu())
             return ConversationHandler.END
-    async with db.cursor() as c:
-        await c.execute(
+        c.execute(
             "INSERT INTO admins (user_id, added_at) VALUES (?, ?)",
             (user_id, datetime.now().isoformat())
         )
-        await db.commit()
-    # Clear admin cache
-    get_admin_info.cache_clear()
+        conn.commit()
     await update.message.reply_text("ادمین با موفقیت اضافه شد! ✅", reply_markup=get_admin_menu())
     return ConversationHandler.END
 
@@ -1299,25 +1283,23 @@ async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     query = update.callback_query
     await query.answer()
     user_id = int(query.data.split("_")[1])
-    async with db.cursor() as c:
-        await c.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
-        await db.commit()
-    # Clear admin cache
-    get_admin_info.cache_clear()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+        conn.commit()
     await query.message.reply_text("ادمین با موفقیت حذف شد! ✅", reply_markup=get_admin_menu())
     await query.message.delete()
     return ConversationHandler.END
 
-async def get_active_events_for_manual_reg() -> List[Tuple]:
-    async with db.execute("SELECT event_id, title, type FROM events WHERE is_active = 1") as cursor:
-        return await cursor.fetchall()
-
 async def manual_registration_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS and not await get_admin_info(user_id):
+    if user_id not in ADMIN_IDS and not get_admin_info(user_id):
         await update.message.reply_text("شما دسترسی ادمین ندارید! 🚫")
         return ConversationHandler.END
-    events = await get_active_events_for_manual_reg()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT event_id, title, type FROM events WHERE is_active = 1")
+        events = c.fetchall()
     if not events:
         await update.message.reply_text("هیچ رویداد فعالی وجود ندارد!", reply_markup=get_admin_menu())
         return ConversationHandler.END
@@ -1339,18 +1321,23 @@ async def manual_registration_student_id(update: Update, context: ContextTypes.D
     if not re.match(r"^\d+$", student_id):
         await update.message.reply_text("شماره دانشجویی باید فقط شامل اعداد باشد. دوباره وارد کنید:")
         return MANUAL_REG_STUDENT_ID
-    async with db.execute("SELECT * FROM users WHERE student_id = ?", (student_id,)) as cursor:
-        user = await cursor.fetchone()
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE student_id = ?", (student_id,))
+        user = c.fetchone()
     if not user:
         await update.message.reply_text("کاربری با این شماره دانشجویی یافت نشد. دوباره وارد کنید:")
         return MANUAL_REG_STUDENT_ID
     context.user_data["manual_reg_user_id"] = user[0]
     event_id = context.user_data["manual_reg_event_id"]
-    event = await get_event_by_id(event_id)
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT title, type FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
     text = (
         f"کاربر: {user[1]}\n"
         f"شماره دانشجویی: {user[3]}\n"
-        f"رویداد: {event[1]} ({event[2]})"
+        f"رویداد: {event[0]} ({event[1]})"
     )
     await update.message.reply_text(
         text,
@@ -1370,45 +1357,48 @@ async def confirm_manual_registration(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
     user_id = context.user_data["manual_reg_user_id"]
     event_id = context.user_data["manual_reg_event_id"]
-    if await check_registration(user_id, event_id):
-        await query.message.reply_text("این کاربر قبلاً ثبت‌نام کرده است!", reply_markup=get_admin_menu())
-        await query.message.delete()
-        return ConversationHandler.END
-    event = await get_event_by_id(event_id)
-    if event[2] != "دوره" and event[6] >= event[5]:
-        await query.message.reply_text("ظرفیت رویداد تکمیل شده است!", reply_markup=get_admin_menu())
-        await query.message.delete()
-        return ConversationHandler.END
-    async with db.cursor() as c:
-        await c.execute(
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT * FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+        if c.fetchone():
+            await query.message.reply_text("این کاربر قبلاً ثبت‌نام کرده است!", reply_markup=get_admin_menu())
+            await query.message.delete()
+            return ConversationHandler.END
+        c.execute("SELECT * FROM events WHERE event_id = ?", (event_id,))
+        event = c.fetchone()
+        if event[2] != "دوره" and event[6] >= event[5]:
+            await query.message.reply_text("ظرفیت رویداد تکمیل شده است!", reply_markup=get_admin_menu())
+            await query.message.delete()
+            return ConversationHandler.END
+        c.execute(
             "INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
             (user_id, event_id, datetime.now().isoformat())
         )
-        await c.execute(
+        c.execute(
             "UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?",
             (event_id,)
         )
-        async with db.execute("SELECT COUNT(*) FROM registrations WHERE event_id = ?", (event_id,)) as cursor:
-            reg_count = (await cursor.fetchone())[0]
-        await db.commit()
-    user_info = await get_user_info(user_id)
+        c.execute("SELECT full_name, national_id, student_id, phone FROM users WHERE user_id = ?", (user_id,))
+        user = c.fetchone()
+        # محاسبه شماره ردیف
+        c.execute("SELECT COUNT(*) FROM registrations WHERE event_id = ?", (event_id,))
+        reg_count = c.fetchone()[0]
+        conn.commit()
     text = (
         f"#{event[2]} #{event[9].replace(' ', '_')}, {reg_count}:\n"
-        f"نام: {user_info[1]}\n"
-        f"کد ملی: {user_info[2]}\n"
-        f"شماره دانشجویی: {user_info[3]}\n"
-        f"شماره تماس: {user_info[4]}"
+        f"نام: {user[0]}\n"
+        f"کد ملی: {user[1]}\n"
+        f"شماره دانشجویی: {user[2]}\n"
+        f"شماره تماس: {user[3]}"
     )
-    try:
-        message = await context.bot.send_message(OPERATOR_GROUP_ID, text)
-        async with db.cursor() as c:
-            await c.execute(
-                "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (message.message_id, OPERATOR_GROUP_ID, user_id, event_id, "registration", datetime.now().isoformat())
-            )
-            await db.commit()
-    except TelegramError as e:
-        logger.error(f"Error sending manual reg to operator: {str(e)}")
+    message = await context.bot.send_message(OPERATOR_GROUP_ID, text)
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (message.message_id, OPERATOR_GROUP_ID, user_id, event_id, "registration", datetime.now().isoformat())
+        )
+        conn.commit()
     await query.message.reply_text("ثبت‌نام دستی با موفقیت انجام شد! ✅", reply_markup=get_admin_menu())
     await query.message.delete()
     if event[2] != "دوره" and event[6] + 1 >= event[5]:
@@ -1417,7 +1407,7 @@ async def confirm_manual_registration(update: Update, context: ContextTypes.DEFA
 
 async def report_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    if user_id not in ADMIN_IDS and not await get_admin_info(user_id):
+    if user_id not in ADMIN_IDS and not get_admin_info(user_id):
         await update.message.reply_text("شما دسترسی ادمین ندارید! 🚫")
         return ConversationHandler.END
     await update.message.reply_text(
@@ -1434,7 +1424,10 @@ async def report_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     await query.answer()
     context.user_data["report_type"] = query.data
     if query.data == "report_registrations":
-        events = await get_events_with_status()
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT event_id, title, type, is_active FROM events")
+            events = c.fetchall()
         if not events:
             await query.message.reply_text("هیچ رویدادی وجود ندارد!", reply_markup=get_admin_menu())
             await query.message.delete()
@@ -1459,45 +1452,32 @@ async def report_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await query.message.delete()
         return REPORT_PERIOD
 
-async def get_registrations_detailed(event_id: int) -> List[Tuple]:
-    async with db.execute(
-        """
-        SELECT u.full_name, u.national_id, u.student_id, u.phone
-        FROM users u
-        JOIN registrations r ON u.user_id = r.user_id
-        WHERE r.event_id = ?
-        ORDER BY r.registered_at
-        """,
-        (event_id,)
-    ) as cursor:
-        return await cursor.fetchall()
-
-async def get_financial_reports(start_date: str) -> List[Tuple]:
-    async with db.execute(
-        """
-        SELECT e.title, e.type, u.full_name, u.national_id, p.amount
-        FROM events e
-        LEFT JOIN payments p ON e.event_id = p.event_id
-        LEFT JOIN users u ON p.user_id = u.user_id
-        WHERE p.confirmed_at >= ? OR p.confirmed_at IS NULL
-        """,
-        (start_date,)
-    ) as cursor:
-        return await cursor.fetchall()
-
 async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     report_type = context.user_data["report_type"]
     if report_type == "report_registrations":
         event_id = int(query.data.split("_")[2])
-        event = await get_event_by_id(event_id)
-        registrations = await get_registrations_detailed(event_id)
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("SELECT title, type, hashtag FROM events WHERE event_id = ?", (event_id,))
+            event = c.fetchone()
+            c.execute(
+                """
+                SELECT u.full_name, u.national_id, u.student_id, u.phone
+                FROM users u
+                JOIN registrations r ON u.user_id = r.user_id
+                WHERE r.event_id = ?
+                ORDER BY r.registered_at
+                """,
+                (event_id,)
+            )
+            registrations = c.fetchall()
         if not registrations:
             await query.message.reply_text("هیچ ثبت‌نامی برای این رویداد وجود ندارد!", reply_markup=get_admin_menu())
             await query.message.delete()
             return ConversationHandler.END
-        text = f"#{event[2]} #{event[9].replace(' ', '_')}\n"
+        text = f"#{event[1]} #{event[2].replace(' ', '_')}\n"
         for idx, reg in enumerate(registrations, 1):
             text += f"{idx}:{reg[0]}/{reg[1]}/{reg[2]}/{reg[3]}\n"
         await query.message.reply_text(text, reply_markup=get_admin_menu())
@@ -1514,7 +1494,19 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             start_date = (now - timedelta(days=30)).isoformat()
         else:
             start_date = "1970-01-01T00:00:00"
-        reports = await get_financial_reports(start_date)
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                SELECT e.title, e.type, u.full_name, u.national_id, p.amount
+                FROM events e
+                LEFT JOIN payments p ON e.event_id = p.event_id
+                LEFT JOIN users u ON p.user_id = u.user_id
+                WHERE p.confirmed_at >= ? OR p.confirmed_at IS NULL
+                """,
+                (start_date,)
+            )
+            reports = c.fetchall()
         if not reports:
             await query.message.reply_text("هیچ پرداختی در این بازه زمانی ثبت نشده است!", reply_markup=get_admin_menu())
             await query.message.delete()
@@ -1535,22 +1527,20 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    user_info = await get_user_info(user.id)
+    user_info = get_user_info(user.id)
     identifier = f"@{user.username}" if user.username else f"شماره: {user_info[4] if user_info else 'نامشخص'}"
     text = f"📞 درخواست پشتیبانی از {identifier}:\n{update.message.text}"
-    try:
-        message = await context.bot.send_message(OPERATOR_GROUP_ID, text)
-        async with db.cursor() as c:
-            await c.execute(
-                "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (message.message_id, OPERATOR_GROUP_ID, user.id, 0, "support", datetime.now().isoformat())
-            )
-            await db.commit()
-    except TelegramError as e:
-        logger.error(f"Error sending support message: {str(e)}")
+    message = await context.bot.send_message(OPERATOR_GROUP_ID, text)
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (message.message_id, OPERATOR_GROUP_ID, user.id, 0, "support", datetime.now().isoformat())
+        )
+        conn.commit()
     await update.message.reply_text(
         "پیام شما به تیم پشتیبانی ارسال شد. 📬 در اسرع وقت پاسخ خواهیم داد.",
-        reply_markup=get_main_menu(user.id in ADMIN_IDS or bool(await get_admin_info(user.id)))
+        reply_markup=get_main_menu(user.id in ADMIN_IDS or bool(get_admin_info(user.id)))
     )
 
 async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1567,21 +1557,20 @@ async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "5️⃣ **چطور می‌توانم از وضعیت ثبت‌نامم مطمئن شوم؟**\n"
         "پس از ثبت‌نام، تأییدیه‌ای دریافت خواهید کرد. برای جزئیات بیشتر با پشتیبانی تماس بگیرید."
     )
-    await update.message.reply_text(text, reply_markup=get_main_menu(update.effective_user.id in ADMIN_IDS or bool(await get_admin_info(update.effective_user.id))))
+    await update.message.reply_text(text, reply_markup=get_main_menu(update.effective_user.id in ADMIN_IDS or bool(get_admin_info(update.effective_user.id))))
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    user_info = await get_user_info(user_id)
+    user_info = get_user_info(user_id)
     full_name = user_info[1] if user_info else "کاربر"
-    is_admin = user_id in ADMIN_IDS or bool(await get_admin_info(user_id))
+    is_admin = user_id in ADMIN_IDS or bool(get_admin_info(user_id))
     await update.message.reply_text(
         f"{full_name} عزیز، به منوی اصلی بازگشتید.",
         reply_markup=get_main_menu(is_admin)
     )
 
 def main() -> None:
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(init_db())
+    init_db()
     app = Application.builder().token(BOT_TOKEN).build()
 
     # ConversationHandler برای profile_conv
