@@ -2,7 +2,7 @@
   "build": {
     "builder": "NIXPACKS"
   },
-  "start": {
-    "cmd": "python \"Bot.py\""
+  "deploy": {
+    "startCommand": "python \"Bot.py\""
   }
 }
