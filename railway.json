@@ -1,7 +1,5 @@
 {
-  "build": {
-    "builder": "NIXPACKS"
-  },
+  "$schema": "https://railway.app/railway.schema.json",
   "deploy": {
     "startCommand": "python \"Bot.py\""
   }
