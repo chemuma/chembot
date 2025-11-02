@@ -191,7 +191,6 @@ feedback_conv = ConversationHandler(
 # --- User-side Rating Handler (Not part of admin conversation) ---
 
 async def handle_user_rating(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles when a user clicks a rating button."""
     query = update.callback_query
     await query.answer()
     
@@ -199,8 +198,8 @@ async def handle_user_rating(update: Update, context: ContextTypes.DEFAULT_TYPE)
         _, event_id_str, rating_str = query.data.split("_")
         event_id = int(event_id_str)
         rating = int(rating_str)
-        user_id = query.effective_user.id
-        
+        user_id = query.from_user.id  # اصلاح
+
         # Check if deadline has passed
         event_status = await db.get_event_feedback_status(event_id)
         if not event_status or not event_status['feedback_sent_at']:
