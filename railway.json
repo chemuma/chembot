@@ -3,6 +3,6 @@
     "builder": "NIXPACKS"
   },
   "start": {
-    "cmd": "python Bot.py"
+    "cmd": "python \"Bot.py\""
   }
 }
