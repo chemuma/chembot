@@ -1,14 +1,14 @@
 # user_event.py
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler, MessageHandler, filters
-from common import (
+from .common import (
     require_channel_membership,
     get_event,
     register_free_event,
     send_payment_request,
     show_main_menu,
 )
-from database import get_active_events, get_registrations_for_event
+from .database import get_active_events, get_registrations_for_event
 
 
 async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
