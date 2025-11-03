@@ -1,5 +1,6 @@
-# railway.json
 {
-  "buildCommand": "pip install -r requirements.txt",
-  "startCommand": "python Bot.py"
+  "$schema": "https://railway.app/railway.schema.json",
+  "deploy": {
+    "startCommand": "python \"Bot.py\""
+  }
 }
