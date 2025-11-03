@@ -145,9 +145,8 @@ async def register_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         # نیاز به پرداخت
         text = (
-            f"برای ثبت‌نام در رویداد '{event['title']}'، لطفاً مبلغ {event['cost']:,} تومان را به کارت زیر واریز کنید:\n\n"
-            f"`{CARD_NUMBER}`\n\n"
-            f"سپس رسید تراکنش را اینجا آپلود کنید."
+            f"برای ثبت‌نام در '{event['title']}'، مبلغ {event['cost']:,} تومان را به کارت {CARD_NUMBER} واریز کنید.\n"
+            "سپس رسید را آپلود کنید."
         )
         await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="back_to_events")]]))
 
@@ -156,28 +155,27 @@ async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_T
     photo = update.message.photo[-1]
     file_id = photo.file_id
 
-    # فرض: آخرین رویداد پرداختی کاربر
+    # پیدا کردن رویداد پرداختی اخیر
     async with db.get_db_connection() as conn:
         cursor = await conn.execute(
             """
             SELECT e.event_id, e.title, e.cost 
             FROM events e
             JOIN registrations r ON e.event_id = r.event_id
-            WHERE r.user_id = ? AND e.cost > 0 AND r.registered_at = (
-                SELECT MAX(registered_at) FROM registrations WHERE user_id = ?
-            )
-            """, (user_id, user_id)
+            WHERE r.user_id = ? AND e.cost > 0
+            ORDER BY r.registered_at DESC LIMIT 1
+            """, (user_id,)
         )
         event = await cursor.fetchone()
 
     if not event:
-        await update.message.reply_text("رویدادی برای تأیید پرداخت یافت نشد.")
+        await update.message.reply_text("رویدادی برای پرداخت یافت نشد.")
         return
 
     caption = (
-        f"رسید پرداخت برای رویداد: {event['title']}\n"
+        f"رسید برای {event['title']}\n"
         f"مبلغ: {event['cost']:,} تومان\n"
-        f"کاربر: {update.effective_user.full_name} (@{update.effective_user.username or 'بدون یوزرنیم'})"
+        f"کاربر: {update.effective_user.full_name} (@{update.effective_user.username or 'none'})"
     )
     buttons = [
         [InlineKeyboardButton("تأیید", callback_data=f"confirm_payment_{user_id}_{event['event_id']}")],
@@ -196,6 +194,82 @@ async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_T
         )
         await conn.commit()
 
-    await update.message.reply_text("رسید شما ارسال شد. منتظر تأیید ادمین باشید.")
+    await update.message.reply_text("رسید ارسال شد. منتظر تأیید باشید.")
 
-# payment_action در فایل بعدی (admin) است
+async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    
+    callback_data = query.data
+    callback_parts = callback_data.split("_")
+    action = callback_parts[0]
+    
+    if not await is_user_admin(update.effective_user.id):
+        await query.answer("فقط ادمین‌ها می‌تونن این کار رو انجام بدن.", show_alert=True)
+        return
+    
+    try:
+        if action == "confirm":
+            sub_action = callback_parts[1]
+            user_id = int(callback_parts[2])
+            event_id = int(callback_parts[3])
+            
+            event = await db.get_event_details(event_id)
+            
+            if sub_action == "confirm_payment":
+                async with db.get_db_connection() as conn:
+                    await conn.execute(
+                        "INSERT INTO payments (user_id, event_id, amount, confirmed_at) VALUES (?, ?, ?, ?)",
+                        (user_id, event_id, event['cost'], datetime.now().isoformat())
+                    )
+                    await conn.execute(
+                        "UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?",
+                        (event_id,)
+                    )
+                    await conn.commit()
+                
+                # ثبت پیام در گروه اپراتورها
+                message_log = await context.bot.send_message(
+                    OPERATOR_GROUP_ID,
+                    f"پرداخت کاربر {user_id} برای رویداد {event['title']} تأیید شد."
+                )
+                await conn.execute(
+                    "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (message_log.message_id, OPERATOR_GROUP_ID, user_id, event_id, "registration", datetime.now().isoformat())
+                )
+                await conn.commit()
+
+                await context.bot.send_message(user_id, f"پرداخت شما برای {event['title']} تأیید شد!")
+                
+                if event['type'] != "دوره" and event['current_capacity'] + 1 >= event['capacity']:
+                    await deactivate_event(event_id, "تکمیل ظرفیت", context)
+                
+                await query.message.edit_caption(caption=f"{query.message.caption}\n\n✅ تأیید توسط {update.effective_user.full_name}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("حذف", callback_data="done")]]))
+            
+            elif sub_action == "unclear_payment":
+                await context.bot.send_message(user_id, f"رسید برای {event['title']} ناخوانا بود. دوباره ارسال کنید.")
+                await query.message.edit_caption(caption=f"{query.message.caption}\n\n📸 ناخوانا توسط {update.effective_user.full_name}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("حذف", callback_data="done")]]))
+            
+            elif sub_action == "cancel_payment":
+                await context.bot.send_message(user_id, f"پرداخت برای {event['title']} تأیید نشد. دوباره ثبت‌نام کنید.")
+                await query.message.edit_caption(caption=f"{query.message.caption}\n\n🚫 ابطال توسط {update.effective_user.full_name}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("حذف", callback_data="done")]]))
+        
+        elif action in ["confirm_payment", "unclear_payment", "cancel_payment"]:
+            user_id = int(callback_parts[1])
+            event_id = int(callback_parts[2])
+            action_label = {"confirm_payment": "تأیید", "unclear_payment": "ناخوانا", "cancel_payment": "ابطال"}[action]
+            
+            caption = query.message.caption
+            if "تأیید نهایی" in caption or "ابطال" in caption:
+                await query.answer("این رسید پردازش شده.", show_alert=True)
+                return
+
+            buttons = [
+                [InlineKeyboardButton(f"تأیید نهایی {action_label}", callback_data=f"confirm_{action}_{user_id}_{event_id}")],
+                [InlineKeyboardButton("بازگشت", callback_data="done")]
+            ]
+            await query.message.edit_reply_markup(InlineKeyboardMarkup(buttons))
+    
+    except Exception as e:
+        logger.error(f"Error in payment_action: {e}")
+        await query.message.reply_text("خطایی رخ داد.")
