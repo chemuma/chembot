@@ -9,7 +9,7 @@ from telegram.ext import (
     filters,
 )
 from .common import require_admin, get_admin_menu
-from .database import (
+from database import (
     get_all_events,
     get_event,
     get_registrations_for_event,
