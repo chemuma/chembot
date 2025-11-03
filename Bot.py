@@ -7,7 +7,6 @@ from user_profile import (
     profile_conv,
     edit_profile_conv,
     reset_bot,
-    faq,
     handle_support_message,
 )
 from user_event import (
