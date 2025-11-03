@@ -8,15 +8,15 @@ from telegram.ext import (
     ContextTypes,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from common import require_admin, get_admin_menu, get_event, get_registrations_for_event
-from database import (
+from .common import require_admin, get_admin_menu, get_event, get_registrations_for_event
+from .database import (
     submit_rating,
     get_average_rating,
     is_feedback_sent,
     mark_feedback_sent,
     has_user_rated,
 )
-from config import OPERATOR_GROUP_ID, FEEDBACK_DURATION_HOURS
+from .config import OPERATOR_GROUP_ID, FEEDBACK_DURATION_HOURS
 
 # راه‌اندازی APScheduler
 scheduler = AsyncIOScheduler()
