@@ -9,7 +9,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from common import (
+from .common import (
     validate_national_id,
     validate_phone,
     validate_full_name,
@@ -18,7 +18,7 @@ from common import (
     show_main_menu,
     remove_keyboard,
 )
-from database import (
+from .database import (
     get_user_info,
     create_user,
     update_user_field,
