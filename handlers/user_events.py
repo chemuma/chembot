@@ -1,275 +1,356 @@
-# handlers/user_events.py
-import logging
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
+# user_profile.py
+from enum import Enum, auto
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import (
+    ConversationHandler,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
+from common import (
+    validate_national_id,
+    validate_phone,
+    validate_full_name,
+    get_main_menu,
+    require_channel_membership,
+    show_main_menu,
+    remove_keyboard,
+)
+from database import (
+    get_user_info,
+    create_user,
+    update_user_field,
+    is_admin,
+)
 
-import database as db
-from config import CHANNEL_ID, CARD_NUMBER, OPERATOR_GROUP_ID
-from handlers.common import check_channel_membership, is_user_admin
 
-logger = logging.getLogger(__name__)
+# ==============================
+# حالت‌های مکالمه پروفایل
+# ==============================
 
-async def deactivate_event(event_id: int, reason: str, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        async with db.get_db_connection() as conn:
-            await conn.execute(
-                "UPDATE events SET is_active = 0, deactivation_reason = ? WHERE event_id = ?",
-                (reason, event_id)
-            )
-            event = await db.get_event_details(event_id)
-            registrations = await db.get_event_participants(event_id)
-            await conn.commit()
+class ProfileStates(Enum):
+    FULL_NAME = auto()
+    CONFIRM_FULL_NAME = auto()
+    NATIONAL_ID = auto()
+    CONFIRM_NATIONAL_ID = auto()
+    STUDENT_ID = auto()
+    CONFIRM_STUDENT_ID = auto()
+    PHONE = auto()
+    CONFIRM_PHONE = auto()
 
-            users = []
-            for reg in registrations:
-                user = await db.get_user_info(reg['user_id'])
-                if user:
-                    users.append(f"- {user['full_name']} ({user['phone']})")
 
-            text = (
-                f"#{event['type']} #{event['hashtag'].replace(' ', '_')}\n"
-                f"#نهایی\n"
-                f"تعداد: {len(users)}\n"
-                f"{' '.join(users)}"
-            )
-            message = await context.bot.send_message(OPERATOR_GROUP_ID, text)
-            
-            await conn.execute(
-                "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (message.message_id, OPERATOR_GROUP_ID, 0, event_id, "final_list", datetime.now().isoformat())
-            )
-            await conn.commit()
-            logger.info(f"Event {event_id} deactivated. Reason: {reason}")
-            
-    except Exception as e:
-        logger.error(f"Error deactivating event {event_id}: {e}")
+class EditProfileStates(Enum):
+    SELECT_FIELD = auto()
+    INPUT_VALUE = auto()
 
-async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message or (update.callback_query.message if update.callback_query else None)
-    if not message:
-        return
 
-    if not await check_channel_membership(update, context):
-        await message.reply_text(
-            f"لطفاً ابتدا کانال رسمی را دنبال کنید: {CHANNEL_ID}",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("عضو شدم", callback_data="check_membership")
-            ]])
+# ==============================
+# ConversationHandler: ثبت‌نام اولیه
+# ==============================
+
+profile_conv = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        ProfileStates.FULL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, full_name)],
+        ProfileStates.CONFIRM_FULL_NAME: [CallbackQueryHandler(confirm_full_name)],
+        ProfileStates.NATIONAL_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, national_id)],
+        ProfileStates.CONFIRM_NATIONAL_ID: [CallbackQueryHandler(confirm_national_id)],
+        ProfileStates.STUDENT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, student_id)],
+        ProfileStates.CONFIRM_STUDENT_ID: [CallbackQueryHandler(confirm_student_id)],
+        ProfileStates.PHONE: [
+            MessageHandler(filters.CONTACT, phone),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, phone)
+        ],
+        ProfileStates.CONFIRM_PHONE: [CallbackQueryHandler(confirm_phone)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+    per_message=False,
+)
+
+
+# ==============================
+# توابع پروفایل
+# ==============================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """شروع ربات و چک عضویت"""
+    if not await require_channel_membership(update, context):
+        return ConversationHandler.END
+
+    user_info = await get_user_info(update.effective_user.id)
+    if user_info:
+        await show_main_menu(update, context)
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        "لطفاً نام کامل خود را به فارسی وارد کنید (مثال: علی محمدی):",
+        reply_markup=remove_keyboard()
+    )
+    return ProfileStates.FULL_NAME
+
+
+async def full_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if not validate_full_name(text):
+        await update.message.reply_text(
+            "نام کامل باید حداقل 6 کاراکتر فارسی و شامل یک فاصله باشد. دوباره وارد کنید:"
         )
-        return
-        
-    events = await db.get_all_events(active_only=True)
-            
-    if not events:
-        await message.reply_text("در حال حاضر دوره یا بازدید فعالی وجود ندارد.")
-        return
-        
-    buttons = [[InlineKeyboardButton(f"{e['title']} ({e['type']})", callback_data=f"event_{e['event_id']}")] for e in events]
-    
-    if update.callback_query and update.callback_query.data == "back_to_events":
-        await update.callback_query.message.edit_text(
-            "رویدادهای فعال:", reply_markup=InlineKeyboardMarkup(buttons)
-        )
-    else:
-        await message.reply_text("رویدادهای فعال:", reply_markup=InlineKeyboardMarkup(buttons))
+        return ProfileStates.FULL_NAME
 
-async def event_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["full_name"] = text
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("بله", callback_data="confirm_full_name"),
+        InlineKeyboardButton("خیر", callback_data="retry_full_name")
+    ]])
+    await update.message.reply_text(f"آیا نام زیر درست است؟\n\n{text}", reply_markup=keyboard)
+    return ProfileStates.CONFIRM_FULL_NAME
+
+
+async def confirm_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    event_id = int(query.data.split("_")[1])
-    
-    event = await db.get_event_details(event_id)
-    if not event:
-        await query.message.edit_text("رویداد یافت نشد!")
-        return
-        
-    if not event['is_active']:
-        await query.message.edit_text(f"رویداد غیرفعال شده است. دلیل: {event['deactivation_reason']}")
-        return
-        
-    capacity_text = "نامحدود" if event['type'] == "دوره" else f"{event['capacity'] - event['current_capacity']}/{event['capacity']}"
-    cost_text = "رایگان" if event['cost'] == 0 else f"{event['cost']:,} تومان"
-    
+
+    if query.data == "retry_full_name":
+        await query.edit_message_text("لطفاً نام کامل خود را دوباره وارد کنید:")
+        return ProfileStates.FULL_NAME
+
+    await query.edit_message_text("لطفاً کد ملی 10 رقمی خود را وارد کنید:")
+    return ProfileStates.NATIONAL_ID
+
+
+async def national_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if not validate_national_id(text):
+        await update.message.reply_text("کد ملی نامعتبر است. لطفاً 10 رقم معتبر وارد کنید:")
+        return ProfileStates.NATIONAL_ID
+
+    context.user_data["national_id"] = text
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("بله", callback_data="confirm_national_id"),
+        InlineKeyboardButton("خیر", callback_data="retry_national_id")
+    ]])
+    await update.message.reply_text(f"آیا کد ملی زیر درست است؟\n\n{text}", reply_markup=keyboard)
+    return ProfileStates.CONFIRM_NATIONAL_ID
+
+
+async def confirm_national_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "retry_national_id":
+        await query.edit_message_text("لطفاً کد ملی خود را دوباره وارد کنید:")
+        return ProfileStates.NATIONAL_ID
+
+    await query.edit_message_text("لطفاً شماره دانشجویی خود را وارد کنید:")
+    return ProfileStates.STUDENT_ID
+
+
+async def student_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await update.message.reply_text("شماره دانشجویی باید فقط شامل اعداد باشد. دوباره وارد کنید:")
+        return ProfileStates.STUDENT_ID
+
+    context.user_data["student_id"] = text
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("بله", callback_data="confirm_student_id"),
+        InlineKeyboardButton("خیر", callback_data="retry_student_id")
+    ]])
+    await update.message.reply_text(f"آیا شماره دانشجویی زیر درست است؟\n\n{text}", reply_markup=keyboard)
+    return ProfileStates.CONFIRM_STUDENT_ID
+
+
+async def confirm_student_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "retry_student_id":
+        await query.edit_message_text("لطفاً شماره دانشجویی خود را دوباره وارد کنید:")
+        return ProfileStates.STUDENT_ID
+
+    keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton("ارسال شماره تماس", request_contact=True)]],
+        one_time_keyboard=True,
+        resize_keyboard=True
+    )
+    await query.edit_message_text(
+        "لطفاً شماره تماس خود را وارد کنید یا دکمه زیر را فشار دهید:",
+        reply_markup=keyboard
+    )
+    return ProfileStates.PHONE
+
+
+async def phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.contact:
+        phone = update.message.contact.phone_number
+        phone = phone.replace("+98", "0") if phone.startswith("+98") else phone
+    else:
+        phone = update.message.text.strip()
+
+    if not validate_phone(phone):
+        await update.message.reply_text("شماره تماس باید 11 رقم و با 09 شروع شود. دوباره وارد کنید:")
+        return ProfileStates.PHONE
+
+    context.user_data["phone"] = phone
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("بله", callback_data="confirm_phone"),
+        InlineKeyboardButton("خیر", callback_data="retry_phone")
+    ]])
+    await update.message.reply_text(f"آیا شماره تماس زیر درست است؟\n\n{phone}", reply_markup=keyboard)
+    return ProfileStates.CONFIRM_PHONE
+
+
+async def confirm_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "retry_phone":
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton("ارسال شماره تماس", request_contact=True)]],
+            one_time_keyboard=True
+        )
+        await query.edit_message_text(
+            "لطفاً شماره تماس خود را دوباره وارد کنید:",
+            reply_markup=keyboard
+        )
+        return ProfileStates.PHONE
+
+    user_id = update.effective_user.id
+    await create_user(
+        user_id=user_id,
+        full_name=context.user_data["full_name"],
+        national_id=context.user_data["national_id"],
+        student_id=context.user_data["student_id"],
+        phone=context.user_data["phone"]
+    )
+
+    is_admin_user = await is_admin(user_id)
+    await query.edit_message_text(
+        "پروفایل شما با موفقیت ایجاد شد!",
+        reply_markup=get_main_menu(is_admin_user)
+    )
+    return ConversationHandler.END
+
+
+# ==============================
+# ویرایش پروفایل
+# ==============================
+
+edit_profile_conv = ConversationHandler(
+    entry_points=[MessageHandler(filters.Regex("^(ویرایش مشخصات)$"), edit_profile_start)],
+    states={
+        EditProfileStates.SELECT_FIELD: [CallbackQueryHandler(edit_profile_field)],
+        EditProfileStates.INPUT_VALUE: [
+            MessageHandler(filters.CONTACT, edit_profile_value),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, edit_profile_value),
+        ],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+    per_message=False,
+)
+
+
+async def edit_profile_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not await require_channel_membership(update, context):
+        return ConversationHandler.END
+
+    user_info = await get_user_info(update.effective_user.id)
+    if not user_info:
+        await update.message.reply_text("ابتدا پروفایل خود را تکمیل کنید!")
+        return ConversationHandler.END
+
     text = (
-        f"عنوان: {event['title']}\n"
-        f"نوع: {event['type']}\n"
-        f"تاریخ: {event['date']}\n"
-        f"محل: {event['location']}\n"
-        f"هزینه: {cost_text}\n"
-        f"ظرفیت باقی‌مانده: {capacity_text}\n"
-        f"توضیحات: {event['description']}"
+        f"اطلاعات فعلی شما:\n"
+        f"نام کامل: {user_info['full_name']}\n"
+        f"کد ملی: {user_info['national_id']}\n"
+        f"شماره دانشجویی: {user_info['student_id']}\n"
+        f"شماره تماس: {user_info['phone']}"
     )
     buttons = [
-        [InlineKeyboardButton("ثبت‌نام", callback_data=f"register_{event_id}")],
-        [InlineKeyboardButton("بازگشت", callback_data="back_to_events")]
+        [InlineKeyboardButton("ویرایش نام", callback_data="edit_full_name")],
+        [InlineKeyboardButton("ویرایش کد ملی", callback_data="edit_national_id")],
+        [InlineKeyboardButton("ویرایش شماره دانشجویی", callback_data="edit_student_id")],
+        [InlineKeyboardButton("ویرایش شماره تماس", callback_data="edit_phone")],
+        [InlineKeyboardButton("لغو", callback_data="cancel_edit")]
     ]
-    await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    return EditProfileStates.SELECT_FIELD
 
-async def register_event(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+async def edit_profile_field(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    event_id = int(query.data.split("_")[1])
-    user_id = update.effective_user.id
 
-    event = await db.get_event_details(event_id)
-    if not event or not event['is_active']:
-        await query.message.edit_text("رویداد در دسترس نیست.")
-        return
+    if query.data == "cancel_edit":
+        is_admin_user = await is_admin(update.effective_user.id)
+        await query.edit_message_text("ویرایش لغو شد.", reply_markup=get_main_menu(is_admin_user))
+        return ConversationHandler.END
 
-    # چک ثبت‌نام قبلی
-    async with db.get_db_connection() as conn:
-        cursor = await conn.execute(
-            "SELECT 1 FROM registrations WHERE user_id = ? AND event_id = ?",
-            (user_id, event_id)
+    context.user_data["edit_field"] = query.data
+    field_name = {
+        "edit_full_name": "نام کامل",
+        "edit_national_id": "کد ملی",
+        "edit_student_id": "شماره دانشجویی",
+        "edit_phone": "شماره تماس"
+    }[query.data]
+
+    if query.data == "edit_phone":
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton("ارسال شماره تماس", request_contact=True)]],
+            one_time_keyboard=True
         )
-        if await cursor.fetchone():
-            await query.message.edit_text("شما قبلاً در این رویداد ثبت‌نام کرده‌اید.")
-            return
-
-    if event['cost'] == 0:
-        # ثبت‌نام رایگان
-        async with db.get_db_connection() as conn:
-            await conn.execute(
-                "INSERT INTO registrations (user_id, event_id, registered_at) VALUES (?, ?, ?)",
-                (user_id, event_id, datetime.now().isoformat())
-            )
-            await conn.execute(
-                "UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?",
-                (event_id,)
-            )
-            await conn.commit()
-        await query.message.edit_text("ثبت‌نام شما با موفقیت انجام شد!")
-        if event['type'] != "دوره" and event['current_capacity'] + 1 >= event['capacity']:
-            await deactivate_event(event_id, "تکمیل ظرفیت", context)
+        await query.edit_message_text(f"لطفاً {field_name} جدید را وارد کنید:", reply_markup=keyboard)
     else:
-        # نیاز به پرداخت
-        text = (
-            f"برای ثبت‌نام در '{event['title']}'، مبلغ {event['cost']:,} تومان را به کارت {CARD_NUMBER} واریز کنید.\n"
-            "سپس رسید را آپلود کنید."
-        )
-        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="back_to_events")]]))
+        await query.edit_message_text(f"لطفاً {field_name} جدید را وارد کنید:")
 
-async def handle_payment_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    return EditProfileStates.INPUT_VALUE
+
+
+async def edit_profile_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    photo = update.message.photo[-1]
-    file_id = photo.file_id
+    field = context.user_data["edit_field"]
 
-    # پیدا کردن رویداد پرداختی اخیر
-    async with db.get_db_connection() as conn:
-        cursor = await conn.execute(
-            """
-            SELECT e.event_id, e.title, e.cost 
-            FROM events e
-            JOIN registrations r ON e.event_id = r.event_id
-            WHERE r.user_id = ? AND e.cost > 0
-            ORDER BY r.registered_at DESC LIMIT 1
-            """, (user_id,)
-        )
-        event = await cursor.fetchone()
+    if field == "edit_full_name":
+        text = update.message.text.strip()
+        if not validate_full_name(text):
+            await update.message.reply_text("نام کامل نامعتبر است. دوباره وارد کنید:")
+            return EditProfileStates.INPUT_VALUE
+        await update_user_field(user_id, "full_name", text)
 
-    if not event:
-        await update.message.reply_text("رویدادی برای پرداخت یافت نشد.")
-        return
+    elif field == "edit_national_id":
+        text = update.message.text.strip()
+        if not validate_national_id(text):
+            await update.message.reply_text("کد ملی نامعتبر است.")
+            return EditProfileStates.INPUT_VALUE
+        await update_user_field(user_id, "national_id", text)
 
-    caption = (
-        f"رسید برای {event['title']}\n"
-        f"مبلغ: {event['cost']:,} تومان\n"
-        f"کاربر: {update.effective_user.full_name} (@{update.effective_user.username or 'none'})"
-    )
-    buttons = [
-        [InlineKeyboardButton("تأیید", callback_data=f"confirm_payment_{user_id}_{event['event_id']}")],
-        [InlineKeyboardButton("ناخوانا", callback_data=f"unclear_payment_{user_id}_{event['event_id']}")],
-        [InlineKeyboardButton("ابطال", callback_data=f"cancel_payment_{user_id}_{event['event_id']}")]
-    ]
-    message = await context.bot.send_photo(
-        OPERATOR_GROUP_ID, file_id, caption=caption, reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    elif field == "edit_student_id":
+        text = update.message.text.strip()
+        if not text.isdigit():
+            await update.message.reply_text("شماره دانشجویی باید عددی باشد.")
+            return EditProfileStates.INPUT_VALUE
+        await update_user_field(user_id, "student_id", text)
 
-    # ثبت پیام
-    async with db.get_db_connection() as conn:
-        await conn.execute(
-            "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (message.message_id, OPERATOR_GROUP_ID, user_id, event['event_id'], "payment_receipt", datetime.now().isoformat())
-        )
-        await conn.commit()
+    elif field == "edit_phone":
+        if update.message.contact:
+            phone = update.message.contact.phone_number.replace("+98", "0") if update.message.contact.phone_number.startswith("+98") else update.message.contact.phone_number
+        else:
+            phone = update.message.text.strip()
+        if not validate_phone(phone):
+            await update.message.reply_text("شماره تماس نامعتبر است.")
+            return EditProfileStates.INPUT_VALUE
+        await update_user_field(user_id, "phone", phone)
 
-    await update.message.reply_text("رسید ارسال شد. منتظر تأیید باشید.")
+    is_admin_user = await is_admin(user_id)
+    await update.message.reply_text("پروفایل شما با موفقیت ویرایش شد!", reply_markup=get_main_menu(is_admin_user))
+    return ConversationHandler.END
 
-async def payment_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    
-    callback_data = query.data
-    callback_parts = callback_data.split("_")
-    action = callback_parts[0]
-    
-    if not await is_user_admin(update.effective_user.id):
-        await query.answer("فقط ادمین‌ها می‌تونن این کار رو انجام بدن.", show_alert=True)
-        return
-    
-    try:
-        if action == "confirm":
-            sub_action = callback_parts[1]
-            user_id = int(callback_parts[2])
-            event_id = int(callback_parts[3])
-            
-            event = await db.get_event_details(event_id)
-            
-            if sub_action == "confirm_payment":
-                async with db.get_db_connection() as conn:
-                    await conn.execute(
-                        "INSERT INTO payments (user_id, event_id, amount, confirmed_at) VALUES (?, ?, ?, ?)",
-                        (user_id, event_id, event['cost'], datetime.now().isoformat())
-                    )
-                    await conn.execute(
-                        "UPDATE events SET current_capacity = current_capacity + 1 WHERE event_id = ?",
-                        (event_id,)
-                    )
-                    await conn.commit()
-                
-                # ثبت پیام در گروه اپراتورها
-                message_log = await context.bot.send_message(
-                    OPERATOR_GROUP_ID,
-                    f"پرداخت کاربر {user_id} برای رویداد {event['title']} تأیید شد."
-                )
-                await conn.execute(
-                    "INSERT INTO operator_messages (message_id, chat_id, user_id, event_id, message_type, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (message_log.message_id, OPERATOR_GROUP_ID, user_id, event_id, "registration", datetime.now().isoformat())
-                )
-                await conn.commit()
 
-                await context.bot.send_message(user_id, f"پرداخت شما برای {event['title']} تأیید شد!")
-                
-                if event['type'] != "دوره" and event['current_capacity'] + 1 >= event['capacity']:
-                    await deactivate_event(event_id, "تکمیل ظرفیت", context)
-                
-                await query.message.edit_caption(caption=f"{query.message.caption}\n\n✅ تأیید توسط {update.effective_user.full_name}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("حذف", callback_data="done")]]))
-            
-            elif sub_action == "unclear_payment":
-                await context.bot.send_message(user_id, f"رسید برای {event['title']} ناخوانا بود. دوباره ارسال کنید.")
-                await query.message.edit_caption(caption=f"{query.message.caption}\n\n📸 ناخوانا توسط {update.effective_user.full_name}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("حذف", callback_data="done")]]))
-            
-            elif sub_action == "cancel_payment":
-                await context.bot.send_message(user_id, f"پرداخت برای {event['title']} تأیید نشد. دوباره ثبت‌نام کنید.")
-                await query.message.edit_caption(caption=f"{query.message.caption}\n\n🚫 ابطال توسط {update.effective_user.full_name}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("حذف", callback_data="done")]]))
-        
-        elif action in ["confirm_payment", "unclear_payment", "cancel_payment"]:
-            user_id = int(callback_parts[1])
-            event_id = int(callback_parts[2])
-            action_label = {"confirm_payment": "تأیید", "unclear_payment": "ناخوانا", "cancel_payment": "ابطال"}[action]
-            
-            caption = query.message.caption
-            if "تأیید نهایی" in caption or "ابطال" in caption:
-                await query.answer("این رسید پردازش شده.", show_alert=True)
-                return
-
-            buttons = [
-                [InlineKeyboardButton(f"تأیید نهایی {action_label}", callback_data=f"confirm_{action}_{user_id}_{event_id}")],
-                [InlineKeyboardButton("بازگشت", callback_data="done")]
-            ]
-            await query.message.edit_reply_markup(InlineKeyboardMarkup(buttons))
-    
-    except Exception as e:
-        logger.error(f"Error in payment_action: {e}")
-        await query.message.reply_text("خطایی رخ داد.")
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_info = await get_user_info(update.effective_user.id)
+    full_name = user_info["full_name"] if user_info else "کاربر"
+    is_admin_user = await is_admin(update.effective_user.id)
+    await update.message.reply_text(f"{full_name} عزیز، عملیات لغو شد.", reply_markup=get_main_menu(is_admin_user))
+    return ConversationHandler.END
