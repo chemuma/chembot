@@ -8,7 +8,7 @@ from .common import (
     send_payment_request,
     show_main_menu,
 )
-from .database import get_active_events, get_registrations_for_event
+from database import get_active_events, get_registrations_for_event
 
 
 async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
