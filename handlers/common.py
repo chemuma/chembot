@@ -16,8 +16,8 @@ from telegram.ext import ContextTypes
 from telegram.constants import ChatMemberStatus
 from telegram.error import Forbidden
 
-from config import CHANNEL_ID, ADMIN_IDS, OPERATOR_GROUP_ID, CARD_NUMBER
-from database import (
+from .config import CHANNEL_ID, ADMIN_IDS, OPERATOR_GROUP_ID, CARD_NUMBER
+from .database import (
     get_user_info,
     get_admin_info,
     get_event,
