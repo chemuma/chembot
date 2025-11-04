@@ -107,6 +107,5 @@ async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_T
         "پیام شما به تیم پشتیبانی ارسال شد. در اسرع وقت پاسخ خواهیم داد.",
         reply_markup=get_main_menu(is_admin)
     )
-
-async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await show_main_menu(update, context, "به منوی اصلی بازگشتید.")
