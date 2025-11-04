@@ -1,4 +1,5 @@
 # database.py
+DB_PATH = "/app/data/chemeng_bot.db"
 import aiosqlite
 from config import DB_PATH
 
