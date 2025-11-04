@@ -119,4 +119,5 @@ async def main() -> None:
     await application.run_polling()
 
 if __name__ == '__main__':
+    print("ربات در حال اجراست...")
     asyncio.run(main())
