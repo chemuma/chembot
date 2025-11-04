@@ -292,7 +292,7 @@ async def edit_profile_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # Conversation Handler
 profile_conv = ConversationHandler(
     entry_points=[
-        ConversationHandler.CONF_HANDLER_START,
+        CommandHandler("start", start),
         MessageHandler(filters.Regex("^(ویرایش مشخصات)$"), edit_profile_start)
     ],
     states={
