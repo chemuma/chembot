@@ -10,7 +10,9 @@ from config import BOT_TOKEN, CHANNEL_ID, OPERATOR_GROUP_ID, ADMIN_IDS
 from database import init_db
 from handlers.common import (
     show_main_menu, cancel, reset_bot, faq, handle_support_message,
-    get_main_menu, get_admin_row, back_to_main_menu, check_membership
+    get_main_menu, get_admin_row, back_to_main_menu,
+    check_channel_membership as check_membership
+)
 )
 from handlers.user_profile import profile_conv
 from handlers.user_events import (
