@@ -72,8 +72,8 @@ async def manual_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # --- Start Command ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await profile_conv.entry_points[0](update, context)
-
+    return await profile_conv(update, context) 
+    
 # --- Main ---
 async def main() -> None:
     await init_db()
