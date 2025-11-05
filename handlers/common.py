@@ -9,36 +9,31 @@ from database import init_db
 import aiosqlite
 from datetime import datetime
 import re
-
+import logging 
+logger = logging.getLogger(__name__)
 # --- Utility Functions ---
-async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بررسی عضویت و نمایش دکمه عضویت در صورت نیاز"""
+async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     try:
         member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
         if member.status in ["member", "administrator", "creator"]:
-            
             await update.callback_query.answer("عضو هستید! ✅")
-            
-            from handlers.common import show_main_menu
             await show_main_menu(update, context)
             return
-        else:
-            
-            await update.callback_query.answer("لطفاً اول عضو کانال شوید.")
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("عضویت در کانال", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}")
-            ], [
-                InlineKeyboardButton("عضو شدم ✅", callback_data="check_membership")
-            ]])
-            await update.callback_query.edit_message_text(
-                "برای استفاده از ربات، ابتدا در کانال عضو شوید:",
-                reply_markup=keyboard
-            )
     except Exception as e:
-        logger = logging.getLogger(__name__)
         logger.error(f"خطا در چک عضویت: {e}")
-        await update.callback_query.answer("خطایی رخ داد. دوباره تلاش کنید.")
+
+
+    await update.callback_query.answer()
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("عضویت در کانال", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}")
+    ], [
+        InlineKeyboardButton("عضو شدم ✅", callback_data="check_membership")
+    ]])
+    await update.callback_query.edit_message_text(
+        "برای استفاده، ابتدا عضو کانال شوید:",
+        reply_markup=keyboard
+    )
 
 async def get_user_row(user_id: int) -> aiosqlite.Row | None:
     async with aiosqlite.connect("chemeng_bot.db") as db:
