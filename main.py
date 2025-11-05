@@ -118,6 +118,10 @@ async def main() -> None:
     logger.info("ربات شروع شد...")
     await application.run_polling()
 
+# main.py - انتهای فایل
 if __name__ == '__main__':
     print("ربات در حال اجراست...")
-    main()
+    import asyncio
+    import nest_asyncio
+    nest_asyncio.apply()
+    asyncio.run(main())  # این باید باشه!
