@@ -1,6 +1,6 @@
 # handlers/admin_events.py
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import ContextTypes, ConversationHandler, filters, CallbackQueryHandler, MessageHandler
+from telegram.ext import ContextTypes, ConversationHandler, filters, CallbackQueryHandler, MessageHandler, CommandHandler
 from .common import get_admin_row, get_main_menu, cancel, show_main_menu
 from config import ADMIN_IDS, CARD_NUMBER
 from datetime import datetime
