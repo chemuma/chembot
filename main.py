@@ -73,7 +73,7 @@ async def manual_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
 # --- Start Command ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     handler = profile_conv.entry_points[0]
-    return await handler.callback(update, context)) 
+    return await handler.callback(update, context)
     
 # --- Main ---
 async def main() -> None:
