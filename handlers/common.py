@@ -14,27 +14,33 @@ logger = logging.getLogger(__name__)
 # --- Utility Functions ---
 async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    query = update.callback_query
+
+    # فقط اگر از دکمه اومده بود
+    if query:
+        await query.answer()
+
     try:
         member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
         if member.status in ["member", "administrator", "creator"]:
-            await update.callback_query.answer("عضو هستید! ✅")
+            if query:
+                await query.edit_message_text("عضو هستید! در حال ورود...")
             await show_main_menu(update, context)
             return
     except Exception as e:
         logger.error(f"خطا در چک عضویت: {e}")
 
-
-    await update.callback_query.answer()
+    # اگر عضو نیست
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("عضویت در کانال", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}")
     ], [
-        InlineKeyboardButton("عضو شدم ✅", callback_data="check_membership")
+        InlineKeyboardButton("عضو شدم", callback_data="check_membership")
     ]])
-    await update.callback_query.edit_message_text(
-        "برای استفاده، ابتدا عضو کانال شوید:",
-        reply_markup=keyboard
-    )
 
+    if query:
+        await query.edit_message_text("برای استفاده، ابتدا عضو کانال شوید:", reply_markup=keyboard)
+    else:
+        await update.message.reply_text("برای استفاده، ابتدا عضو کانال شوید:", reply_markup=keyboard)
 async def get_user_row(user_id: int) -> aiosqlite.Row | None:
     async with aiosqlite.connect("chemeng_bot.db") as db:
         db.row_factory = aiosqlite.Row
