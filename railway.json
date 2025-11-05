@@ -4,6 +4,6 @@
     "builder": "RAILPACK"
   },
   "deploy": {
-    "startCommand": "python Bot.py"
+    "startCommand": "python main.py"
   }
 }
