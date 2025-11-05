@@ -1,4 +1,5 @@
 # handlers/admin_management.py
+from enum import IntEnum
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler, filters, CallbackQueryHandler, MessageHandler
 from .common import get_admin_row, get_main_menu, cancel, show_main_menu
@@ -12,7 +13,8 @@ class AdminState(IntEnum):
     REMOVE_ADMIN = 1
     CONFIRM_ADD = 2
     CONFIRM_REMOVE = 3
-
+    TOGGLE_SELECT = 11
+    TOGGLE_REASON = 12 
 # --- Add Admin ---
 async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
