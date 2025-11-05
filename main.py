@@ -13,7 +13,6 @@ from handlers.common import (
     get_main_menu, get_admin_row, back_to_main_menu,
     check_channel_membership as check_membership
 )
-)
 from handlers.user_profile import profile_conv
 from handlers.user_events import (
     show_events, event_details, register_event, handle_payment_receipt,
