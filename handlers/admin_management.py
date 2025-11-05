@@ -1,7 +1,7 @@
 # handlers/admin_management.py
 from enum import IntEnum
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ContextTypes, ConversationHandler, filters, CallbackQueryHandler, MessageHandler
+from telegram.ext import ContextTypes, ConversationHandler, filters, CallbackQueryHandler, MessageHandler, CommandHandler
 from .common import get_admin_row, get_main_menu, cancel, show_main_menu
 from config import ADMIN_IDS
 from datetime import datetime
