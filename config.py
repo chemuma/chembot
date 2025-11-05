@@ -1,7 +1,7 @@
 # config.py
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7996022698:AAG65GXEjbDbgMGFVT9ExeGFmkvj0UDqbXE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8435664471:AAG743aq1XvwFOPGy_6jU7AV8p21wsiXdQc")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@chemical_eng_uma")
 OPERATOR_GROUP_ID = int(os.getenv("OPERATOR_GROUP_ID", "-1002574996302"))
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "5701423397,158893761").split(",")]
