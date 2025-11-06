@@ -108,7 +108,6 @@ async def main() -> None:
     application.add_handler(CommandHandler("manual_reg", manual_registration))
 
     # Support & Back
-    application.add_handler(MessageHandler(filters.Regex("^ارتباط با پشتیبانی$"), lambda u, c: u.message.reply_text("پیام خود را بنویسید:")))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_support_message))
     application.add_handler(MessageHandler(filters.Regex("^بازگشت$"), back_to_main_menu))
 
