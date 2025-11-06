@@ -80,6 +80,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def main() -> None:
     await init_db()
 
+    application.add_handler(profile_conv)
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CallbackQueryHandler(check_membership, pattern="^check_membership$"))
     # User Commands
