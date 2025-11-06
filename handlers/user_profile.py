@@ -46,6 +46,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = await get_user_row(update.effective_user.id)
     if not user:
         await update.message.reply_text("لطفاً نام کامل خود را به فارسی وارد کنید (مثال: علی محمدی):")
+        return ProfileState.FULL_NAME  
+
+    await show_main_menu(update, context)
+    return ConversationHandler.END
+
+    user = await get_user_row(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("لطفاً نام کامل خود را به فارسی وارد کنید (مثال: علی محمدی):")
         return ProfileState.FULL_NAME
 
     await show_main_menu(update, context)
