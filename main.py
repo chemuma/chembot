@@ -72,9 +72,8 @@ async def manual_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("ثبت‌نام دستی انجام شد.")
 
 # --- Start Command ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    handler = profile_conv.entry_points[0]
-    return await handler.callback(update, context)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await profile_conv.entry_points[0].callback(update, context)
     
 # --- Main ---
 async def main() -> None:
