@@ -80,15 +80,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def main() -> None:
     await init_db()
 
-    application.add_handler(profile_conv)
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CallbackQueryHandler(check_membership, pattern="^check_membership$"))
     # User Commands
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.Regex("^دوره‌ها/بازدیدها$"), show_events))
     application.add_handler(MessageHandler(filters.Regex("^سوالات متداول$"), faq))
-    application.add_handler(MessageHandler(filters.Regex("^ارتباط با پشتیبانی$"), lambda u, c: u.message.reply_text("پیام خود را بنویسید:")))
     application.add_handler(MessageHandler(filters.Regex("^لغو/شروع دوباره$"), reset_bot))
+    application.add_handler(MessageHandler(filters.Regex("^ارتباط با پشتیبانی$"), lambda u, c: u.message.reply_text("پیام خود را بنویسید:")))
 
     # Profile
     application.add_handler(profile_conv)
